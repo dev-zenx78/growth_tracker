@@ -7,11 +7,16 @@ today = str(date.today())
 
 print("\nAnswer with y or n\n")
 
-physics = input("Did you study Physics today? (y/n): ")
-additional = input("Did you study Chemistry/Maths today? (y/n): ")
-exercise = input("Did you exercise today? (y/n): ")
-wake = input("Did you wake up between 5:00–5:30? (y/n): ")
-screen = input("Was wasteful screen time ≤ 1 hour? (y/n): ")
+def yn_to_int(answer):
+    return 1 if answer.lower() == "y" else 0
+
+
+
+physics = yn_to_int(input("Did you study Physics today? (y/n): "))
+additional = yn_to_int(input("Did you study Chemistry/Maths today? (y/n): "))
+exercise = yn_to_int(input("Did you exercise today? (y/n): "))
+wake = yn_to_int(input("Did you wake up between 5:00–5:30? (y/n): "))
+screen = yn_to_int(input("Was wasteful screen time ≤ 1 hour? (y/n): "))
 
 print("\nData collected successfully")
 
