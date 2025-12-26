@@ -20,7 +20,44 @@ screen = yn_to_int(input("Was wasteful screen time ≤ 1 hour? (y/n): "))
 
 print("\nData collected successfully")
 
+def already_logged_today(filename, today):
+    if not os.path.exists(filename):
+        return False
+
+    with open(filename, "r") as file:
+        for line in file:
+            if f"Date: {today}" in line:
+                return True
+    return False
+
+
+
+def remove_today_entry(filename, today):
+    if not os.path.exists(filename):
+        return
+
+    new_lines = []
+    skip = False
+
+    with open(filename, "r") as file:
+        for line in file:
+            if line.strip() == f"Date: {today}":
+                skip = True
+                continue
+            if skip and line.strip() == "--------------------":
+                skip = False
+                continue
+            if not skip:
+                new_lines.append(line)
+
+    with open(filename, "w") as file:
+        file.writelines(new_lines)
+
+
 filename = f"data/{username}.txt"
+
+remove_today_entry(filename, today)
+
 
 with open(filename, "a") as file:
     file.write(f"Date: {today}\n")
