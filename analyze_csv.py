@@ -1,6 +1,8 @@
 import os
 import pandas as pd
 from datetime import datetime
+import matplotlib.pyplot as plt
+import numpy as np
 
 CSV_PATH = "form_data/growth_data.csv"
 
@@ -129,6 +131,35 @@ def generate_user_summaries(df):
     summaries = df.groupby("username").apply(summarize_group, include_groups=False).round(2).sort_values(by="average_score", ascending=False)
     return summaries
 
+def plot_average_scores(summaries):
+    fig, ax = plt.subplots()
+    ax.bar(summaries.index, summaries['average_score'])
+    ax.set_xlabel('User')
+    ax.set_ylabel('Average Score')
+    ax.set_title('Average Scores per User')
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.savefig('average_scores.png')
+    plt.close()
+
+def plot_streaks(summaries):
+    users = summaries.index
+    x = np.arange(len(users))
+    width = 0.25
+    fig, ax = plt.subplots()
+    ax.bar(x - width, summaries['academic_streak'], width, label='Academic')
+    ax.bar(x, summaries['physical_streak'], width, label='Physical')
+    ax.bar(x + width, summaries['mental_streak'], width, label='Mental')
+    ax.set_xlabel('User')
+    ax.set_ylabel('Streak Length')
+    ax.set_title('Streaks per User')
+    ax.set_xticks(x, users)
+    ax.legend()
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.savefig('streaks.png')
+    plt.close()
+
 # Main execution
 df = load_and_normalize_csv(CSV_PATH)
 df = map_habit_values(df)
@@ -144,4 +175,10 @@ print("\nDaily scores:")
 print(df[["timestamp", "username", "daily_score"]])
 
 print("\n🏆 User Summaries:")
-print(generate_user_summaries(df))
+summaries = generate_user_summaries(df)
+print(summaries)
+
+# Generate and save plots
+plot_average_scores(summaries)
+plot_streaks(summaries)
+print("✅ Plots saved as 'average_scores.png' and 'streaks.png'")
