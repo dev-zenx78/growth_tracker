@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime
 import matplotlib.pyplot as plt
 import numpy as np
+import re
 
 CSV_PATH = "form_data/growth_data.csv"
 
@@ -16,28 +17,76 @@ if os.path.getsize(CSV_PATH) == 0:
     exit()
 # ======================
 
+def validate_and_clean_data(df):
+    # Check for duplicates based on timestamp and username
+    initial_rows = len(df)
+    df = df.drop_duplicates(subset=['timestamp', 'username'], keep='first')
+    if len(df) < initial_rows:
+        print(f"⚠️ Removed {initial_rows - len(df)} duplicate entries.")
+    
+    # Validate timestamps (ensure they are valid dates)
+    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+    invalid_dates = df['timestamp'].isna().sum()
+    if invalid_dates > 0:
+        print(f"⚠️ Found {invalid_dates} invalid timestamps; they have been set to NaT.")
+    
+    # Clean usernames: strip whitespace, but keep case-sensitive as per your instruction
+    df['username'] = df['username'].str.strip()
+    
+    # Flag potential username typos (simple check for similar names)
+    usernames = df['username'].unique()
+    for user in usernames:
+        similar = [u for u in usernames if u != user and re.sub(r'[^a-zA-Z]', '', u.lower()) == re.sub(r'[^a-zA-Z]', '', user.lower())]
+        if similar:
+            print(f"⚠️ Possible username typo: '{user}' similar to {similar}")
+    
+    # Check for missing values in key columns
+    key_cols = ['username', 'timestamp', 'physics', 'additional_subject_chemistrymaths', 'exercise', 'wake_up', 'screen_control']
+    missing = df[key_cols].isnull().sum()
+    if missing.any():
+        print(f"⚠️ Missing values in columns: {missing[missing > 0].to_dict()}")
+        # Optionally, fill with defaults (e.g., 0 for habits)
+        df[key_cols] = df[key_cols].fillna(0)
+    
+    return df
+
 def load_and_normalize_csv(path):
     try:
         df = pd.read_csv(path)
         print("✅ CSV loaded successfully")
         print(df.head())
         
-        # Normalize column names
+        # Normalize column names first
         df.columns = (
             df.columns
             .str.strip()
             .str.lower()
             .str.replace(" ", "_")
-            .str.replace(r"[()/]", "", regex=True)
+            .str.replace(r"[()/.]", "", regex=True)
+            .str.replace("\n", "")
+            .str.replace(":", "")
         )
         
-        # Convert timestamp to datetime
-        df["timestamp"] = pd.to_datetime(df["timestamp"], errors='coerce')
+        # Rename columns to expected names
+        rename_dict = {
+            "username_use_same_username_always_it_is_case_sensitive_so_keep_that_also_in_mind": "username",
+            "timestamp": "timestamp",
+            "physics_45_minutes_is_minimum": "physics",
+            "additional_subject_do_any_one_out_of_chemistry_or_maths_for_at_least_45_minutes": "additional_subject_chemistrymaths",
+            "exercise_do_50_pushups_and_50_situps_or_run_2km_or_do_whatever_you_can_accept_as_doing_something_physical": "exercise",
+            "wake_up__wake_up_before_600_am": "wake_up",
+            "screen_control_the_wasteful_screen_time_must_be_less_than_1_hour_": "screen_control"
+        }
+        df = df.rename(columns=rename_dict)
+        
+        # Add validation and cleaning after renaming
+        df = validate_and_clean_data(df)
         
         return df
+        
     except Exception as e:
         print(f"❌ Error loading CSV: {e}")
-        exit()
+        return pd.DataFrame()
 
 def map_habit_values(df):
     yes_no_map = {
@@ -68,14 +117,8 @@ def calculate_daily_scores(df):
         print(f"❌ Missing habit columns: {missing_cols}")
         exit()
     
-    # Prioritize academic and mental: weight 2, physical 1
-    df["daily_score"] = (
-        df["physics"] * 2 +
-        df["additional_subject_chemistrymaths"] * 2 +
-        df["exercise"] * 1 +
-        df["wake_up"] * 2 +
-        df["screen_control"] * 2
-    )
+    # Equal weight for all habits
+    df["daily_score"] = df[habit_columns].sum(axis=1)
     return df
 
 def calculate_academic_streak(group):
@@ -128,7 +171,7 @@ def generate_user_summaries(df):
             'mental_streak': mental_streak
         })
     
-    summaries = df.groupby("username").apply(summarize_group, include_groups=False).round(2).sort_values(by="average_score", ascending=False)
+    summaries = df.groupby("username").apply(summarize_group, include_groups=False).round(2).sort_values(by="total_score", ascending=False)
     return summaries
 
 def plot_average_scores(summaries):
@@ -181,4 +224,23 @@ print(summaries)
 # Generate and save plots
 plot_average_scores(summaries)
 plot_streaks(summaries)
-print("✅ Plots saved as 'average_scores.png' and 'streaks.png'")
+
+def plot_sorted_summaries_table(summaries):
+    # Include username as first column
+    table_data = summaries.round(2).reset_index().values
+    col_labels = ['Username'] + list(summaries.columns)
+    
+    fig, ax = plt.subplots(figsize=(12, 8))
+    ax.axis('tight')
+    ax.axis('off')
+    table = ax.table(cellText=table_data, colLabels=col_labels, loc='center')
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1.2, 1.2)
+    plt.title('User Summaries Table (Sorted by Average Score)')
+    plt.savefig('user_summaries_table.png')
+    plt.close()
+
+plot_sorted_summaries_table(summaries)
+
+print("✅ Plots saved as 'average_scores.png', 'streaks.png', and 'user_summaries_table.png'")
