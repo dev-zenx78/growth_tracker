@@ -4,6 +4,10 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import numpy as np
 import re
+import json
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.utils import ImageReader
 
 CSV_PATH = "form_data/growth_data.csv"
 
@@ -203,6 +207,100 @@ def plot_streaks(summaries):
     plt.savefig('streaks.png')
     plt.close()
 
+def plot_sorted_summaries_table(summaries):
+    # Include username as first column
+    table_data = summaries.round(2).reset_index().values
+    col_labels = ['Username'] + list(summaries.columns)
+    
+    fig, ax = plt.subplots(figsize=(12, 8))
+    ax.axis('tight')
+    ax.axis('off')
+    table = ax.table(cellText=table_data, colLabels=col_labels, loc='center')
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1.2, 1.2)
+    plt.title('User Summaries Table (Sorted by Average Score)')
+    plt.savefig('user_summaries_table.png')
+    plt.close()
+
+def plot_individual_trends(df, username):
+    import json
+    user_df = df[df['username'] == username].sort_values('timestamp')
+    if user_df.empty:
+        print(f"⚠️ No data for user {username}")
+        return
+    
+    # Load user config
+    try:
+        with open('user_config.json', 'r') as f:
+            user_config = json.load(f)
+        config = user_config.get(username, {})
+        title = config.get('title', f'Daily Score Trends for {username}')
+        color = config.get('color', 'blue')
+    except FileNotFoundError:
+        title = f'Daily Score Trends for {username}'
+        color = 'blue'
+    
+    fig, ax = plt.subplots()
+    ax.plot(user_df['timestamp'], user_df['daily_score'], marker='o', color=color)
+    ax.set_xlabel('Date')
+    ax.set_ylabel('Daily Score')
+    ax.set_title(title)
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.savefig(f'data/individual_images/{username}_trends.png')
+    plt.close()
+    
+    # Add avatar if configured
+    avatar_path = config.get('avatar_path')
+    if avatar_path and os.path.exists(avatar_path):
+        from PIL import Image as PILImage
+        img = PILImage.open(f'data/individual_images/{username}_trends.png')
+        avatar = PILImage.open(avatar_path).resize((50, 50))
+        img.paste(avatar, (10, 10))
+        img.save(f'data/individual_images/{username}_trends.png')
+
+def generate_individual_report(df, username):
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.utils import ImageReader
+    
+    user_df = df[df['username'] == username]
+    if user_df.empty:
+        return
+    
+    trend_file = f'data/individual_images/{username}_trends.png'
+    if not os.path.exists(trend_file):
+        plot_individual_trends(df, username)
+    
+    pdf_file = f'data/individual_images/{username}_report.pdf'
+    c = canvas.Canvas(pdf_file, pagesize=letter)
+    width, height = letter
+    
+    # Title page
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(100, height - 100, f"Personal Growth Report for {username}")
+    c.setFont("Helvetica", 12)
+    c.drawString(100, height - 120, f"Generated on {datetime.now().strftime('%Y-%m-%d')}")
+    
+    # Summary stats
+    total_score = user_df['daily_score'].sum()
+    average_score = user_df['daily_score'].mean()
+    days_logged = len(user_df)
+    c.drawString(100, height - 160, f"Total Score: {total_score}")
+    c.drawString(100, height - 180, f"Average Score: {average_score:.2f}")
+    c.drawString(100, height - 200, f"Days Logged: {days_logged}")
+    
+    c.showPage()
+    
+    # Embed trend plot
+    if os.path.exists(trend_file):
+        img = ImageReader(trend_file)
+        c.drawImage(img, 50, height - 400, width=500, height=300)
+    
+    c.save()
+    print(f"✅ Report saved as {pdf_file}")
+
 # Main execution
 df = load_and_normalize_csv(CSV_PATH)
 df = map_habit_values(df)
@@ -244,3 +342,12 @@ def plot_sorted_summaries_table(summaries):
 plot_sorted_summaries_table(summaries)
 
 print("✅ Plots saved as 'average_scores.png', 'streaks.png', and 'user_summaries_table.png'")
+
+# Generate individual reports
+users = df['username'].unique()
+for user in users:
+    plot_individual_trends(df, user)
+    generate_individual_report(df, user)
+    print(f"✅ Individual report generated for {user}")
+
+print("✅ All individual reports generated")
