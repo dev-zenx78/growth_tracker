@@ -8,6 +8,8 @@ import json
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import ImageReader
+import json
+from datetime import timedelta
 
 CSV_PATH = "form_data/growth_data.csv"
 
@@ -91,6 +93,86 @@ def load_and_normalize_csv(path):
     except Exception as e:
         print(f"❌ Error loading CSV: {e}")
         return pd.DataFrame()
+    
+
+
+def collapse_to_daily(df):
+    """Collapse multiple submissions on the same date to a single daily row (max of each habit)."""
+    df['date'] = pd.to_datetime(df['timestamp']).dt.date
+    habit_cols = ['physics','additional_subject_chemistrymaths','exercise','wake_up','screen_control']
+    daily = (
+        df.groupby(['username','date'])[habit_cols]
+        .max()   # did the user do it at least once that day
+        .reset_index()
+    )
+    return daily
+
+def compute_streak_for_user(daily_df, required_cols, start_date_obj, end_date_obj, mercy_days=2):
+    """
+    Compute streak for one user using:
+      - required_cols: list of columns that must be True on a day to count as a valid day
+      - mercy_days: allowed consecutive missing days (no submissions) tolerated
+    Rules:
+      - A logged day with required_cols not all True breaks the streak immediately.
+      - Missing days (no row) are tolerated up to mercy_days in a row.
+      - If last_log is older than mercy_days relative to end_date_obj, return 0 (no visible streak).
+    """
+    if daily_df.empty:
+        return 0, None  # streak, last_log_date
+
+    # Map date -> row
+    daily_df = daily_df.sort_values('date')
+    daily_df['valid_day'] = daily_df[required_cols].all(axis=1)
+
+    logged_dates = set(daily_df['date'].tolist())
+    valid_dates = set(daily_df[daily_df['valid_day']]['date'].tolist())
+
+    last_log = daily_df['date'].max()
+
+    # If user hasn't logged within mercy_days of end, they show no active streak
+    if (end_date_obj - last_log).days > mercy_days:
+        # still return last_log so you can persist it, but streak=0 for display.
+        return 0, last_log
+
+    # Walk backwards from last_log day-by-day and count streak
+    streak = 0
+    missing_in_a_row = 0
+    cur_date = last_log
+
+    while cur_date >= start_date_obj:
+        if cur_date in valid_dates:
+            # a valid completed day -> streak continues
+            streak += 1
+            missing_in_a_row = 0
+            cur_date = cur_date - timedelta(days=1)
+            continue
+        elif cur_date in logged_dates and cur_date not in valid_dates:
+            # user logged but failed required tasks -> streak broken
+            break
+        else:
+            # cur_date not logged at all (missing)
+            missing_in_a_row += 1
+            if missing_in_a_row > mercy_days:
+                break
+            # allow gap and continue backwards
+            cur_date = cur_date - timedelta(days=1)
+            continue
+
+    return streak, last_log
+
+def save_streak_state(streak_state, path='streaks_state.json'):
+    try:
+        existing = {}
+        if os.path.exists(path):
+            with open(path, 'r') as f:
+                existing = json.load(f)
+        # merge/overwrite
+        existing.update(streak_state)
+        with open(path, 'w') as f:
+            json.dump(existing, f, default=str, indent=2)
+    except Exception as e:
+        print(f"⚠️ Could not save streak state: {e}")
+   
 
 def map_habit_values(df):
     yes_no_map = {
@@ -157,7 +239,235 @@ def calculate_mental_streak(group):
     streaks = group.groupby('streak_group').size()
     return streaks.iloc[-1] if not streaks.empty else 0
 
+# ---------------------------
+# Helper: collapse to daily
+# ---------------------------
+def collapse_to_daily(df):
+    """
+    Collapse multiple submissions per username/date to a single row per day.
+    We use .max() across habit columns so if a user did a habit at least once that day,
+    the day is considered completed for that habit.
+    Returns a DataFrame with columns: ['username', 'date', habits...]
+    """
+    # Ensure timestamp is datetime
+    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+    df['date'] = df['timestamp'].dt.date
+
+    habit_cols = ['physics', 'additional_subject_chemistrymaths', 'exercise', 'wake_up', 'screen_control']
+    daily = (
+        df.groupby(['username', 'date'])[habit_cols]
+          .max()            # did the user do this habit at least once that day?
+          .reset_index()
+    )
+    return daily
+
+
+# ---------------------------
+# Helper: compute streak for one user
+# ---------------------------
+def compute_streak_for_user(daily_df, required_cols, start_date_obj, end_date_obj, mercy_days=2):
+    """
+    Compute active streak length for the given user's daily dataframe.
+    Rules implemented:
+      - A day counts only if ALL required_cols are True on that day (logged & completed).
+      - Missing days (no log at all) are tolerated up to `mercy_days` consecutive days.
+      - If the user logged but failed required tasks on any day in the backward walk, the streak stops immediately.
+      - If the user's last log is older than `mercy_days` relative to end_date_obj, visible streak = 0.
+    Returns: (streak_int, last_log_date_or_None)
+    """
+    # If user has no logs
+    if daily_df.empty:
+        return 0, None
+
+    # Prepare and mark valid days
+    daily_df = daily_df.sort_values('date').copy()
+    daily_df['valid_day'] = daily_df[required_cols].all(axis=1)
+
+    logged_dates = set(daily_df['date'].tolist())
+    valid_dates = set(daily_df[daily_df['valid_day']]['date'].tolist())
+    last_log = daily_df['date'].max()
+
+    # If the last time user logged is beyond mercy_days from end_date_obj -> show no active streak
+    if (end_date_obj - last_log).days > mercy_days:
+        return 0, last_log
+
+    # Walk backwards day-by-day starting from last_log
+    streak = 0
+    missing_in_a_row = 0
+    cur_date = last_log
+
+    while cur_date >= start_date_obj:
+        if cur_date in valid_dates:
+            # Completed day -> continue streak
+            streak += 1
+            missing_in_a_row = 0
+            cur_date = cur_date - timedelta(days=1)
+            continue
+
+        if cur_date in logged_dates and cur_date not in valid_dates:
+            # The user logged this day but did NOT complete required tasks -> immediate break
+            break
+
+        # cur_date was not logged at all (missing day)
+        missing_in_a_row += 1
+        if missing_in_a_row > mercy_days:
+            # Gap exceeded mercy allowance -> break
+            break
+
+        # Allowed missing day -> continue walking backwards
+        cur_date = cur_date - timedelta(days=1)
+
+    return streak, last_log
+
+
+# ---------------------------
+# Helper: persist streak state
+# ---------------------------
+def save_streak_state(streak_state, path='streaks_state.json'):
+    """
+    Save/merge streak_state into a JSON file.
+    Format: { username: { academic_streak: int, physical_streak: int, ... , saved_on: 'YYYY-MM-DD' } }
+    """
+    try:
+        existing = {}
+        if os.path.exists(path):
+            with open(path, 'r') as f:
+                existing = json.load(f)
+        # Update and write back
+        existing.update(streak_state)
+        with open(path, 'w') as f:
+            json.dump(existing, f, default=str, indent=2)
+    except Exception as e:
+        print(f"⚠️ Could not save streak state to {path}: {e}")
+
+
+# ---------------------------
+# Updated generate_user_summaries
+# ---------------------------
 def generate_user_summaries(df):
+    """
+    Updated user summaries generator that:
+      - uses a fixed competition start date
+      - collapses logs to one row per user/day
+      - computes three streak types with mercy for missing days
+      - persists streak state to 'streaks_state.json'
+
+    NOTE: This version fixes a KeyError when the grouped DataFrame does not contain
+    the 'username' column (pandas may move the group key to group.name).
+    """
+    # -------------------------
+    # CONFIG - adjust as required
+    # -------------------------
+    COMPETITION_START_DATE = "2023-10-25"   # format YYYY-MM-DD; set None to use earliest CSV date
+    MERCY_DAYS = 2                          # allowed consecutive missing days tolerated in a streak
+    STREAK_STATE_PATH = 'streaks_state.json'
+    # -------------------------
+
+    # Ensure timestamp is datetime (safety)
+    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+
+    # 1) Determine competition start date
+    if COMPETITION_START_DATE:
+        start_date_obj = pd.to_datetime(COMPETITION_START_DATE).date()
+    else:
+        start_date_obj = df['timestamp'].min().date()
+
+    # 2) Determine "current" snapshot for computation (latest CSV timestamp)
+    end_date_obj = df['timestamp'].max().date()
+
+    # 3) Competition duration (denominator for averages)
+    total_competition_days = (end_date_obj - start_date_obj).days + 1
+    total_competition_days = max(1, total_competition_days)  # safety
+
+    print(f"ℹ️ Calculation Report:")
+    print(f"   Competition Start: {start_date_obj}")
+    print(f"   Latest Data Point: {end_date_obj}")
+    print(f"   Total Days Counted: {total_competition_days}")
+
+    # 4) Collapse original logs into one row per user/day for streak evaluation
+    daily_all = collapse_to_daily(df)
+
+    # 5) Summarize per user (note: `group` might not include 'username' column)
+    def summarize_group(group):
+        # Robustly determine username: prefer column if present, otherwise use group.name
+        if 'username' in group.columns:
+            username = group['username'].iloc[0]
+        else:
+            # group.name holds the group key (the username) when pandas removes the column
+            username = group.name
+
+        # Get the collapsed daily rows for this user (used for streak calculation)
+        user_daily = daily_all[daily_all['username'] == username].copy()
+        days_logged = len(user_daily)
+
+        # Keep total_score and average_score logic as before (score is from original df)
+        total_score = group['daily_score'].sum()
+        average_score = total_score / total_competition_days
+
+        # Compute the three streaks using the unified engine (mercy applies only to missing logs)
+        academic_streak, last_log_acad = compute_streak_for_user(
+            user_daily,
+            required_cols=['physics', 'additional_subject_chemistrymaths'],
+            start_date_obj=start_date_obj,
+            end_date_obj=end_date_obj,
+            mercy_days=MERCY_DAYS
+        )
+
+        physical_streak, last_log_phys = compute_streak_for_user(
+            user_daily,
+            required_cols=['exercise'],
+            start_date_obj=start_date_obj,
+            end_date_obj=end_date_obj,
+            mercy_days=MERCY_DAYS
+        )
+
+        mental_streak, last_log_ment = compute_streak_for_user(
+            user_daily,
+            required_cols=['wake_up', 'screen_control'],
+            start_date_obj=start_date_obj,
+            end_date_obj=end_date_obj,
+            mercy_days=MERCY_DAYS
+        )
+
+        # Return summary row; include last-log metadata for persistence
+        return pd.Series({
+            'total_score': total_score,
+            'average_score': average_score,
+            'days_logged': days_logged,
+            'days_counted': total_competition_days,
+            'academic_streak': academic_streak,
+            'physical_streak': physical_streak,
+            'mental_streak': mental_streak,
+            'last_log_academic': str(last_log_acad) if last_log_acad is not None else None,
+            'last_log_physical': str(last_log_phys) if last_log_phys is not None else None,
+            'last_log_mental': str(last_log_ment) if last_log_ment is not None else None
+        })
+
+    # Run grouping and sorting
+    summaries = (
+        df.groupby("username")
+          .apply(summarize_group, include_groups=False)
+          .round(2)
+          .sort_values(by="average_score", ascending=False)
+    )
+
+    # Persist streak state for each user (keeps a record separate from the CSV)
+    streak_state = {}
+    for u, row in summaries.iterrows():
+        streak_state[u] = {
+            'academic_streak': int(row['academic_streak']),
+            'physical_streak': int(row['physical_streak']),
+            'mental_streak': int(row['mental_streak']),
+            'last_log_academic': row['last_log_academic'],
+            'last_log_physical': row['last_log_physical'],
+            'last_log_mental': row['last_log_mental'],
+            'saved_on': str(end_date_obj)
+        }
+    save_streak_state(streak_state, path=STREAK_STATE_PATH)
+
+    return summaries
+
+    '''
     # ==========================================
     # ⚙️ CONFIG: SET YOUR REFERENCE DATE HERE
     # Format: "YYYY-MM-DD" (e.g., "2023-10-25")
@@ -218,7 +528,7 @@ def generate_user_summaries(df):
     
     summaries = df.groupby("username").apply(summarize_group, include_groups=False).round(2).sort_values(by="average_score", ascending=False)
     return summaries
-    
+    '''
 
 def plot_average_scores(summaries):
     fig, ax = plt.subplots()
