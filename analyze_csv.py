@@ -159,6 +159,107 @@ def calculate_mental_streak(group):
     return streaks.iloc[-1] if not streaks.empty else 0
 
 def generate_user_summaries(df):
+    # ==========================================
+    # ⚙️ CONFIG: SET YOUR REFERENCE DATE HERE
+    # Format: "YYYY-MM-DD" (e.g., "2023-10-25")
+    # If you leave this None, it will default to the earliest date found in the CSV.
+    COMPETITION_START_DATE = "2023-10-25" 
+    # ==========================================
+
+    # 1. Determine the Start Date
+    if COMPETITION_START_DATE:
+        start_date_obj = pd.to_datetime(COMPETITION_START_DATE).date()
+    else:
+        start_date_obj = df['timestamp'].min().date()
+
+    # 2. Determine the End Date (The "Current" state of the competition)
+    # We use the latest timestamp in the CSV to represent "Today" relative to the data.
+    # If you want it to always be actual today, use: end_date_obj = datetime.now().date()
+    end_date_obj = df['timestamp'].max().date()
+
+    # 3. Calculate Total Competition Days (The Denominator)
+    # This counts every single day from start to end, regardless of whether a user logged in.
+    total_competition_days = (end_date_obj - start_date_obj).days + 1
+    
+    # Safety check to avoid division by zero
+    total_competition_days = max(1, total_competition_days)
+
+    print(f"ℹ️ Calculation Report:")
+    print(f"   Competition Start: {start_date_obj}")
+    print(f"   Latest Data Point: {end_date_obj}")
+    print(f"   Total Days Counted: {total_competition_days}")
+
+    def summarize_group(group):
+        # Filter out points logged BEFORE the competition started (optional fairness check)
+        # valid_logs = group[group['timestamp'].dt.date >= start_date_obj]
+        # total_score = valid_logs['daily_score'].sum()
+        
+        # Or simply sum all scores if you don't care about early logs:
+        total_score = group['daily_score'].sum()
+        
+        # --- NEW LOGIC ---
+        # Average = Total Points Earned / Total Duration of Competition
+        average_score = total_score / total_competition_days
+        # -----------------
+
+        days_logged = len(group)
+        academic_streak = calculate_academic_streak(group)
+        physical_streak = calculate_physical_streak(group)
+        mental_streak = calculate_mental_streak(group)
+        
+        return pd.Series({
+            'total_score': total_score,
+            'average_score': average_score,
+            'days_logged': days_logged, # How many days they actually submitted
+            'days_counted': total_competition_days, # The fixed denominator used
+            'academic_streak': academic_streak,
+            'physical_streak': physical_streak,
+            'mental_streak': mental_streak
+        })
+    
+    summaries = df.groupby("username").apply(summarize_group, include_groups=False).round(2).sort_values(by="average_score", ascending=False)
+    return summaries
+    # 1. Identify the "Current Date" of the challenge.
+    # We use the latest timestamp found in the entire CSV. 
+    # This acts as the anchor; if anyone logs a new day, everyone's timeline extends to this point.
+    global_latest_date = df['timestamp'].max()
+
+    def summarize_group(group):
+        total_score = group['daily_score'].sum()
+        
+        # --- NEW AVERAGE LOGIC ---
+        # Find when this specific user started
+        user_start_date = group['timestamp'].min()
+        
+        # Calculate the span of days from their start to the global end
+        # We convert to .date() to ignore hours/minutes and get a clean day count
+        total_possible_days = (global_latest_date.date() - user_start_date.date()).days + 1
+        
+        # Ensure we don't divide by zero (though unlikely)
+        total_possible_days = max(1, total_possible_days)
+        
+        # Calculate average based on the lifespan of their participation
+        average_score = total_score / total_possible_days
+        # -------------------------
+
+        days_logged = len(group)
+        academic_streak = calculate_academic_streak(group)
+        physical_streak = calculate_physical_streak(group)
+        mental_streak = calculate_mental_streak(group)
+        
+        return pd.Series({
+            'total_score': total_score,
+            'average_score': average_score,
+            'days_logged': days_logged,
+            'days_counted': total_possible_days, # Optional: helpful to see the denominator
+            'academic_streak': academic_streak,
+            'physical_streak': physical_streak,
+            'mental_streak': mental_streak
+        })
+    
+    # Apply the summary
+    summaries = df.groupby("username").apply(summarize_group, include_groups=False).round(2).sort_values(by="average_score", ascending=False)
+    return summaries
     def summarize_group(group):
         total_score = group['daily_score'].sum()
         average_score = group['daily_score'].mean()
