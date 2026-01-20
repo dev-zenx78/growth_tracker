@@ -107,22 +107,21 @@ def map_habit_values(df):
     return df
 
 def calculate_daily_scores(df):
-    habit_columns = [
-        "physics",
-        "additional_subject_chemistrymaths",
-        "exercise",
-        "wake_up",
-        "screen_control"
-    ]
+    # Define weights: Harder tasks = more points
+    weights = {
+        "physics": 2.0,          # Core subject, high value
+        "additional_subject_chemistrymaths": 2.0,
+        "exercise": 1.5,         # Physical health
+        "wake_up": 1.0,          # Discipline
+        "screen_control": 1.0    # Discipline
+    }
     
-    # Ensure all habit columns exist
-    missing_cols = [col for col in habit_columns if col not in df.columns]
-    if missing_cols:
-        print(f"❌ Missing habit columns: {missing_cols}")
-        exit()
-    
-    # Equal weight for all habits
-    df["daily_score"] = df[habit_columns].sum(axis=1)
+    # Calculate weighted sum
+    df["daily_score"] = 0
+    for col, weight in weights.items():
+        if col in df.columns:
+            df["daily_score"] += df[col] * weight
+            
     return df
 
 def calculate_academic_streak(group):
@@ -219,65 +218,7 @@ def generate_user_summaries(df):
     
     summaries = df.groupby("username").apply(summarize_group, include_groups=False).round(2).sort_values(by="average_score", ascending=False)
     return summaries
-    # 1. Identify the "Current Date" of the challenge.
-    # We use the latest timestamp found in the entire CSV. 
-    # This acts as the anchor; if anyone logs a new day, everyone's timeline extends to this point.
-    global_latest_date = df['timestamp'].max()
-
-    def summarize_group(group):
-        total_score = group['daily_score'].sum()
-        
-        # --- NEW AVERAGE LOGIC ---
-        # Find when this specific user started
-        user_start_date = group['timestamp'].min()
-        
-        # Calculate the span of days from their start to the global end
-        # We convert to .date() to ignore hours/minutes and get a clean day count
-        total_possible_days = (global_latest_date.date() - user_start_date.date()).days + 1
-        
-        # Ensure we don't divide by zero (though unlikely)
-        total_possible_days = max(1, total_possible_days)
-        
-        # Calculate average based on the lifespan of their participation
-        average_score = total_score / total_possible_days
-        # -------------------------
-
-        days_logged = len(group)
-        academic_streak = calculate_academic_streak(group)
-        physical_streak = calculate_physical_streak(group)
-        mental_streak = calculate_mental_streak(group)
-        
-        return pd.Series({
-            'total_score': total_score,
-            'average_score': average_score,
-            'days_logged': days_logged,
-            'days_counted': total_possible_days, # Optional: helpful to see the denominator
-            'academic_streak': academic_streak,
-            'physical_streak': physical_streak,
-            'mental_streak': mental_streak
-        })
     
-    # Apply the summary
-    summaries = df.groupby("username").apply(summarize_group, include_groups=False).round(2).sort_values(by="average_score", ascending=False)
-    return summaries
-    def summarize_group(group):
-        total_score = group['daily_score'].sum()
-        average_score = group['daily_score'].mean()
-        days_logged = len(group)
-        academic_streak = calculate_academic_streak(group)
-        physical_streak = calculate_physical_streak(group)
-        mental_streak = calculate_mental_streak(group)
-        return pd.Series({
-            'total_score': total_score,
-            'average_score': average_score,
-            'days_logged': days_logged,
-            'academic_streak': academic_streak,
-            'physical_streak': physical_streak,
-            'mental_streak': mental_streak
-        })
-    
-    summaries = df.groupby("username").apply(summarize_group, include_groups=False).round(2).sort_values(by="total_score", ascending=False)
-    return summaries
 
 def plot_average_scores(summaries):
     fig, ax = plt.subplots()
@@ -450,5 +391,38 @@ for user in users:
     plot_individual_trends(df, user)
     generate_individual_report(df, user)
     print(f"✅ Individual report generated for {user}")
+
+
+def plot_radar_chart(df, username):
+    # Filter for user and calculate average compliance (0.0 to 1.0) for each habit
+    user_df = df[df['username'] == username]
+    categories = ["physics", "additional_subject_chemistrymaths", "exercise", "wake_up", "screen_control"]
+    
+    # Calculate success rate % for each category
+    values = []
+    for cat in categories:
+        values.append(user_df[cat].mean()) # 0.8 means 80% success rate
+    
+    # Close the loop for the radar chart
+    values += values[:1]
+    angles = np.linspace(0, 2 * np.pi, len(categories), endpoint=False).tolist()
+    angles += angles[:1]
+    
+    fig, ax = plt.subplots(figsize=(6, 6), subplot_kw=dict(polar=True))
+    ax.fill(angles, values, color='blue', alpha=0.25)
+    ax.plot(angles, values, color='blue', linewidth=2)
+    
+    # Fix labels
+    ax.set_yticklabels([])
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels(["Phy", "Add. Sub", "Gym", "WakeUp", "NoScreen"])
+    
+    plt.title(f"Habit Balance: {username}")
+    plt.savefig(f'data/individual_images/{username}_radar.png')
+    plt.close()
+
+for user in users:
+    plot_radar_chart(df, user)
+    print(f"✅ plot-chart generated for {user}")
 
 print("✅ All individual reports generated")
