@@ -1,1 +1,17 @@
 data/
+# --- Virtual environment ---
+.venv/
+
+# --- Personal / user data ---
+data/
+individual_tracker/
+*.txt
+user_config.json
+streaks_state.json
+
+# --- Generated files ---
+*.png
+*.csv
+
+# --- Allow sample data explicitly ---
+!sample_growth_data.csv
